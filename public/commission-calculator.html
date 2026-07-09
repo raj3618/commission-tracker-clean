@@ -1413,7 +1413,7 @@
         <div>
           <h1 class="launch-title">Commission Calculator</h1>
           <p class="subtitle">Commission Tracker | Multi-ledger control | secure ledger selection</p>
-          <span class="launch-version">App V50</span>
+          <span class="launch-version">App V51</span>
           <div class="launch-private-note">Private financial values are hidden on this entry screen.</div>
         </div>
         <div class="launch-date" id="launchDateText">Today</div>
@@ -1519,7 +1519,7 @@
 
   <div id="appShell" class="app hidden">
     <aside>
-      <div class="brand">Commission Calculator<span>Version V50 - route stray file overwrite</span><small class="version-pill">App V50</small></div>
+      <div class="brand">Commission Calculator<span>Version V51 - recovery-safe Supabase restore</span><small class="version-pill">App V51</small></div>
       <div class="active-ledger">Ledger: <span id="activeLedgerName">Trial</span></div>
       <button class="btn slim" type="button" id="switchLedgerBtn" style="width:100%; margin-bottom:10px;">Change ledger</button>
       <nav class="nav" aria-label="Main">
@@ -2029,7 +2029,7 @@
     const SUPABASE_URL = "https://hanxojirnknrytbswrat.supabase.co";
     const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_aNOKKz6PM4IE0mGIfO6A6w_Qo9yEOvR";
     const SUPABASE_SCHEMA = "commission_tracker";
-    const APP_VERSION = "V50";
+    const APP_VERSION = "V51";
     const commissionRates = [0, 10, 15, 20, 25, 30, 35, 40, 45, 50];
     const today = new Date().toISOString().slice(0, 10);
     let bulkPreviewRows = [];
@@ -2288,14 +2288,21 @@
       try {
         const rows = await supabaseRequest(`/rest/v1/ledger_snapshots?select=ledger_id,state,updated_at&ledger_id=in.(${ledgerIds.join(",")})`, { context: "Load Supabase ledger data" });
         const snapshotByLedger = new Map((Array.isArray(rows) ? rows : []).map(row => [row.ledger_id, row]));
+        let restoredCount = 0;
         ledgerHub.ledgers.forEach(ledger => {
           const snapshot = snapshotByLedger.get(ledger.id);
           if (snapshot?.state) {
             ledger.state = normalizeState(structuredClone(snapshot.state));
             ledger.updatedAt = snapshot.updated_at || ledger.updatedAt;
             ledger.supabaseState = true;
+            restoredCount += 1;
+          } else {
+            ledger.supabaseState = false;
           }
         });
+        if (!restoredCount) {
+          updateSupabaseStatus("Signed in, but no saved ledger snapshots were found in Supabase. Do not enter new data until the old ledger data is restored or imported.", true);
+        }
       } catch (error) {
         updateSupabaseStatus(`Signed in, but Supabase ledger data could not load: ${error.message}`, true);
       }
@@ -2316,6 +2323,11 @@
       }
       const ledger = activeLedger();
       if (!supabaseSession?.access_token || !ledger?.supabase || !isUuid(ledger.id)) return;
+      const ledgerState = normalizeState(structuredClone(ledger.state || state || blankLedgerState()));
+      if (!ledger.supabaseState && !stateHasBusinessData(ledgerState)) {
+        updateSupabaseStatus("Blank ledger was not saved to Supabase. This protects existing data while the ledger restore is checked.", true);
+        return;
+      }
       supabaseSaveInFlight = true;
       try {
         await supabaseRequest("/rest/v1/ledger_snapshots?on_conflict=ledger_id", {
@@ -2326,7 +2338,7 @@
           },
           body: JSON.stringify({
             ledger_id: ledger.id,
-            state: normalizeState(structuredClone(ledger.state || state || blankLedgerState())),
+            state: ledgerState,
             updated_by: supabaseSession.user.id,
             updated_at: new Date().toISOString()
           }),
@@ -2454,6 +2466,18 @@
 
     function blankLedgerState() {
       return structuredClone(sampleState);
+    }
+
+    function stateHasBusinessData(candidateState) {
+      const s = candidateState || {};
+      return [
+        s.agents,
+        s.fees,
+        s.payments,
+        s.bulkBatches,
+        s.changeHistory,
+        s.users
+      ].some(value => Array.isArray(value) && value.length > 0);
     }
 
     function normalizeHubUsers(hub) {
@@ -2633,7 +2657,6 @@
         updateSupabaseStatus("Please sign in successfully before opening a ledger.", true);
         return;
       }
-      if (activeLedgerId && state) saveState();
       activeLedgerId = ledgerId;
       ledgerHub.activeLedgerId = ledgerId;
       state = loadState();
